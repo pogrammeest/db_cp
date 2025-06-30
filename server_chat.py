@@ -99,7 +99,7 @@ class Server(Socket):
         elif "/db" in data["message_text"]:
             sending_data = {
                 "root": "server",
-                "message_text": "У вас недостаточно прав! Пожалуйста автаризируйтесь под администратором!",
+                "message_text": "У вас недостаточно прав! Пожалуйста авторизуйтесь под администратором!",
             }
             if self.is_admin(
                 listened_socket
@@ -116,14 +116,14 @@ class Server(Socket):
                     except:
                         sending_data = {
                             "root": "server",
-                            "message_text": "Таблица ненайдена, полный споск таблиц: \n"
+                            "message_text": "Таблица не найдена, полный список таблиц: \n"
                             + "\n".join(self.db.get_table_name()),
                             "request": "show_db",
                         }
                 else:
                     sending_data = {
                         "root": "server",
-                        "message_text": "Полный споск таблиц: \n"
+                        "message_text": "Полный список таблиц: \n"
                         + "\n".join(self.db.get_table_name()),
                         "request": "show_db",
                     }
@@ -165,7 +165,7 @@ class Server(Socket):
             except SocketException:
                 sending_data = {
                     "root": "server",
-                    "message_text": "Вы уже авторизировались!",
+                    "message_text": "Вы уже авторизовались!",
                 }
             finally:
                 print(self.admins)
@@ -183,7 +183,7 @@ class Server(Socket):
                 )
                 sending_data = {
                     "root": "server",
-                    "message_text": "Регестрация прошла успешно, теперь входите!",
+                    "message_text": "Регистрация прошла успешно, теперь входите!",
                 }
             except IndexError:
                 sending_data = {
@@ -240,7 +240,7 @@ class Server(Socket):
                             where=listened_socket,
                             data={
                                 "root": "server",
-                                "message_text": "Небыло потверждение от предыдущей комманды!",
+                                "message_text": "Не было подтверждения от предыдущей команды!",
                             },
                         )
                     else:
@@ -296,7 +296,7 @@ class Server(Socket):
                 where=client_socket,
                 data={
                     "root": "server",
-                    "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных комманд напиши /help",
+                    "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных команд напиши /help",
                     "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
                 },
             )
