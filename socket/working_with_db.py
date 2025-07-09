@@ -1,3 +1,4 @@
+import os
 import psycopg2
 import prettytable
 
@@ -5,7 +6,11 @@ import prettytable
 class WorkingWithDataBase:
     def __init__(self):
         self.conn = psycopg2.connect(
-            user="postgres", password="admin", port="5432", database="DB"
+            host=os.getenv("POSTGRES_HOST"),
+            user=os.getenv("POSTGRES_USER"),
+            password=os.getenv("POSTGRES_PASSWORD"),
+            port=os.getenv("POSTGRES_PORT"),
+            database=os.getenv("POSTGRES_DB"),
         )
         self.cursor = self.conn.cursor()
 

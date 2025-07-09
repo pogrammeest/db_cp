@@ -39,6 +39,6 @@ CREATE TABLE public.shop (
     todays_products character varying(50),
     id_products integer NOT NULL,
     price integer,
-    date timestamp without time zone
+    date timestamp without time zone,
     FOREIGN KEY(id_products) REFERENCES all_products(id) ON UPDATE CASCADE ON DELETE CASCADE
 );
