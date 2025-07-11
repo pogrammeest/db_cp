@@ -1,10 +1,14 @@
 import os
+from typing import Any
 import psycopg2
 import prettytable
+from utils import logger
+from dotenv import load_dotenv
 
 
 class WorkingWithDataBase:
     def __init__(self):
+        load_dotenv()
         self.conn = psycopg2.connect(
             host=os.getenv("POSTGRES_HOST"),
             user=os.getenv("POSTGRES_USER"),
@@ -26,7 +30,9 @@ class WorkingWithDataBase:
 
         return self.cursor.fetchone()
 
-    def select_all_rows(self, columns="*", table="table"):
+    def select_all_rows(
+        self, columns="*", table="table"
+    ) -> tuple[Any, list[tuple[Any, ...]]]:
         try:
             select_many_rows_command = f"select {columns} from {table} "
             self.cursor.execute(select_many_rows_command)
@@ -43,7 +49,7 @@ class WorkingWithDataBase:
             return (lovely, temp_data)
         except Exception as exc:
             self.conn.rollback()
-            return exc
+            raise exc
 
     def get_table_name(self):
         get_table_name_command = f"SELECT table_name FROM information_schema.tables  where table_schema='public' ORDER BY table_name;"
@@ -76,5 +82,5 @@ class WorkingWithDataBase:
             self.cursor.execute(insert_command)
             self.conn.commit()
         except Exception as e:
-            print("Exception:", e)
+            logger.info("Exception:", e)
             self.conn.rollback()

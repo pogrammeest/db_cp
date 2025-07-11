@@ -1,4 +1,5 @@
 from oop_socket import Socket
+from utils import logger
 from exception import SocketException
 from datetime import datetime
 from working_with_db import WorkingWithDataBase
@@ -16,10 +17,7 @@ class Server(Socket):
         self.registered_commands = {
             "/help": {
                 "root": "server",
-                "message_text": """Список текущих доступных команд:\n  /help - описание\n  
-                      /login - авторизоваться\n  /db - увидеть список доступных таблиц\n  
-                      /chat - включить/выключить режим чата\n  /clear - очистить экран\n  
-                      /reg - регистрация """,
+                "message_text": """Список текущих доступных команд:\n/help - описание\n/login - авторизоваться\n/db - увидеть список доступных таблиц\n/chat - включить/выключить режим чата\n/clear - очистить экран\n/reg - регистрация""",
             },
             "/chat": {"root": "server", "request": "chat"},
             "/clear": {"root": "server", "request": "clear"},
@@ -29,14 +27,14 @@ class Server(Socket):
         self.socket.bind((self.address, self.port))
         self.socket.listen()
         self.socket.setblocking(False)
-        print("Server listing...")
+        logger.info("Server listing...")
 
     async def send_data(self, **kwargs):
         for user in self.users:
             try:
                 await super(Server, self).send_data(where=user, data=kwargs["data"])
             except SocketException as exc:
-                print(exc)
+                logger.info(exc)
                 user.close()
 
     def is_admin(self, user_socket):
@@ -45,153 +43,166 @@ class Server(Socket):
                 return True
         return False
 
+    def reg(self, data):
+        try:
+            login, email, password = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+                data["message_text"].split()[3],
+            )
+            self.db.insert(
+                table="gamers",
+                columns="name, email, password",
+                values=(login, email, password),
+            )
+            return {
+                "root": "server",
+                "message_text": "Регистрация прошла успешно, теперь входите!",
+            }
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": "Пожалуйста, введите /reg [login] [email] [password]",
+            }
+        except Exception as exc:
+            logger.info(exc)
+
+    def db_del(self, data):
+        try:
+            table, condition = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+            )
+            self.db.delete(table, condition)
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": " Пожалуйста, введите /db_del [таблица] [условие]",
+            }
+        except BaseException as err:
+            self.db.conn.rollback()
+            return {
+                "root": "server",
+                "message_text": f" Пожалуйста, проверьте запрос! Ошибка:\n{err}",
+            }
+
+        else:
+            return {
+                "root": "server",
+                "message_text": f" Запрос на удаление в таблице '{table}' успешно выполнен\n",
+            }
+
+    def db_update(self, data):
+        try:
+            table, set_string, condition = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+                data["message_text"].split()[3],
+            )
+            self.db.update(table, set_string, condition)
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": " Пожалуйста, введите /db_update [table] ['set_string'] [условие]",
+            }
+        except BaseException as err:
+            self.db.conn.rollback()
+            return {
+                "root": "server",
+                "message_text": f" Пожалуйста, проверьте запрос! Ошибка:\n{err}",
+            }
+        else:
+            return {
+                "root": "server",
+                "message_text": f" Запрос на обновление в таблице '{table}' успешно выполнен!\n",
+            }
+
+    def find_table(self, data):
+        if not (len(data["message_text"].split()) < 2):
+            try:
+                table = data["message_text"].split()[1]
+                sending_data = self.db.select_all_rows(table=table)[0]
+                return {
+                    "root": "server",
+                    "message_text": sending_data.get_string(),
+                    "request": "show_db",
+                }
+            except:
+                return {
+                    "root": "server",
+                    "message_text": "Таблица не найдена, полный список таблиц: \n"
+                    + "\n".join(self.db.get_table_name()),
+                    "request": "show_db",
+                }
+        else:
+            return {
+                "root": "server",
+                "message_text": "Полный список таблиц: \n"
+                + "\n".join(self.db.get_table_name()),
+                "request": "show_db",
+            }
+
+    def login(self, data, listened_socket):
+        try:
+            login, password = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+            )
+            user = self.db.select_one_row(
+                table="gamers",
+                condition=f"name = '{login}' and password = '{password}'",
+            )
+            for sock in self.authorized_users + self.admins:
+                if listened_socket == sock["socket"]:
+                    raise SocketException
+            if user is None:
+                return {
+                    "root": "server",
+                    "message_text": "Пользователь не найден!",
+                }
+            else:
+                if user[-1]:
+                    self.admins.append({"id": user[0], "socket": listened_socket})
+                    self.registered_commands["/help"][
+                        "message_text"
+                    ] += "\n  /db_del - удаление таблиц \n  /db_update - обновление таблиц"
+                else:
+                    self.authorized_users.append(
+                        {"id": user[0], "socket": listened_socket}
+                    )
+                return {"root": "server", "message_text": "Вы вошли!"}
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": "Пожалуйста, введите /login [логин] [пароль]",
+            }
+        except SocketException:
+            return {
+                "root": "server",
+                "message_text": "Вы уже авторизовались!",
+            }
+        finally:
+            logger.info(self.admins)
+
     def verify_request(self, data: dict, listened_socket: Socket):
         sending_data = {}
         if data["message_text"] in self.registered_commands:
             sending_data = self.registered_commands[data["message_text"]]
         elif "/db_del" in data["message_text"] and self.is_admin(listened_socket):
-            try:
-                table, condition = (
-                    data["message_text"].split()[1],
-                    data["message_text"].split()[2],
-                )
-                self.db.delete(table, condition)
-            except IndexError:
-                sending_data = {
-                    "root": "server",
-                    "message_text": " Пожалуйста, введите /db_del [таблица] [условие]",
-                }
-            except BaseException as err:
-                sending_data = {
-                    "root": "server",
-                    "message_text": f" Пожалуйста, проверьте запрос! Ошибка:\n{err}",
-                }
-                self.db.conn.rollback()
-            else:
-                sending_data = {
-                    "root": "server",
-                    "message_text": f" Запрос на удаление в таблице '{table}' успешно выполнен\n",
-                }
+            sending_data = self.db_del(data)
         elif "/db_update" in data["message_text"] and self.is_admin(listened_socket):
-            try:
-                table, set_string, condition = (
-                    data["message_text"].split()[1],
-                    data["message_text"].split()[2],
-                    data["message_text"].split()[3],
-                )
-                self.db.update(table, set_string, condition)
-            except IndexError:
-                sending_data = {
-                    "root": "server",
-                    "message_text": " Пожалуйста, введите /db_update [table] ['set_string'] [условие]",
-                }
-            except BaseException as err:
-                sending_data = {
-                    "root": "server",
-                    "message_text": f" Пожалуйста, проверьте запрос! Ошибка:\n{err}",
-                }
-                self.db.conn.rollback()
-            else:
-                sending_data = {
-                    "root": "server",
-                    "message_text": f" Запрос на обновление в таблице '{table}' успешно выполнен!\n",
-                }
+            sending_data = self.db_update(data)
         elif "/db" in data["message_text"]:
             sending_data = {
                 "root": "server",
                 "message_text": "У вас недостаточно прав! Пожалуйста авторизуйтесь под администратором!",
             }
-            if self.is_admin(
-                listened_socket
-            ):  # Проверка является ли пользователь админом
-                if not (len(data["message_text"].split()) < 2):
-                    try:
-                        table = data["message_text"].split()[1]
-                        sending_data = self.db.select_all_rows(table=table)[0]
-                        sending_data = {
-                            "root": "server",
-                            "message_text": sending_data.get_string(),
-                            "request": "show_db",
-                        }
-                    except:
-                        sending_data = {
-                            "root": "server",
-                            "message_text": "Таблица не найдена, полный список таблиц: \n"
-                            + "\n".join(self.db.get_table_name()),
-                            "request": "show_db",
-                        }
-                else:
-                    sending_data = {
-                        "root": "server",
-                        "message_text": "Полный список таблиц: \n"
-                        + "\n".join(self.db.get_table_name()),
-                        "request": "show_db",
-                    }
-
+            if self.is_admin(listened_socket):
+                sending_data = self.find_table(data)
         elif "/login" in data["message_text"]:
-            try:
-                login, password = (
-                    data["message_text"].split()[1],
-                    data["message_text"].split()[2],
-                )
-                user = self.db.select_one_row(
-                    table="gamers",
-                    condition=f"name = '{login}' and password = '{password}'",
-                )
-                for sock in self.authorized_users + self.admins:
-                    if listened_socket == sock["socket"]:
-                        raise SocketException
-                if user is None:
-                    sending_data = {
-                        "root": "server",
-                        "message_text": "Пользователь не найден!",
-                    }
-                else:
-                    sending_data = {"root": "server", "message_text": "Вы вошли!"}
-                    if user[-1]:
-                        self.admins.append({"id": user[0], "socket": listened_socket})
-                        self.registered_commands["/help"][
-                            "message_text"
-                        ] += "\n  /db_del - удаление таблиц \n  /db_update - обновление таблиц"
-                    else:
-                        self.authorized_users.append(
-                            {"id": user[0], "socket": listened_socket}
-                        )
-            except IndexError:
-                sending_data = {
-                    "root": "server",
-                    "message_text": "Пожалуйста, введите /login [логин] [пароль]",
-                }
-            except SocketException:
-                sending_data = {
-                    "root": "server",
-                    "message_text": "Вы уже авторизовались!",
-                }
-            finally:
-                print(self.admins)
+            sending_data = self.login(data, listened_socket)
         elif "/reg" in data["message_text"]:
-            try:
-                login, email, password = (
-                    data["message_text"].split()[1],
-                    data["message_text"].split()[2],
-                    data["message_text"].split()[3],
-                )
-                self.db.insert(
-                    table="gamers",
-                    columns="name, email, password",
-                    values=(login, email, password),
-                )
-                sending_data = {
-                    "root": "server",
-                    "message_text": "Регистрация прошла успешно, теперь входите!",
-                }
-            except IndexError:
-                sending_data = {
-                    "root": "server",
-                    "message_text": "Пожалуйста, введите /reg [login] [email] [password]",
-                }
-            except Exception as exc:
-                print(exc)
+            sending_data = self.reg(data)
         else:
             sending_data = {
                 "root": "server",
@@ -206,8 +217,18 @@ class Server(Socket):
                 data = await super(Server, self).listen_socket(listened_socket)
                 data = data["data"]
                 if data["chat_is_working"] and data["message_text"] != "/chat":
-
                     await self.send_data(data=data)
+                elif "/exit" in data["message_text"]:
+                    await super(Server, self).send_data(
+                        where=listened_socket,
+                        data={
+                            "root": "server",
+                            "command": "disconnect",
+                        },
+                    )
+                    self.users.remove(listened_socket)
+                    listened_socket.close()
+                    return
                 elif "/shut_down" in data["message_text"]:
                     if self.is_admin(listened_socket):
                         self.confirm_shut_down = True
@@ -246,6 +267,7 @@ class Server(Socket):
                     else:
                         try:
                             if data["message_text"].split()[1] == "4321":
+                                # TODO: переписать блокирующие функции так, чтобы можно было выключить сервер и клиенты это обработали
                                 await super(Server, self).send_data(
                                     where=listened_socket,
                                     data={
@@ -263,7 +285,7 @@ class Server(Socket):
                                     },
                                 )
                         except Exception as exc:
-                            print(exc)
+                            logger.info(exc)
                             await super(Server, self).send_data(
                                 where=listened_socket,
                                 data={
@@ -279,7 +301,9 @@ class Server(Socket):
                         where=listened_socket, data=sending_data
                     )
             except SocketException as exc:
-                print(f"User {listened_socket.getsockname()[0]} has disconnected.")
+                logger.info(
+                    f"User {listened_socket.getsockname()[0]} has disconnected."
+                )
                 self.users.remove(listened_socket)
                 listened_socket.close()
                 return
@@ -288,8 +312,8 @@ class Server(Socket):
         while True:
             client_socket, client_address = await self.main_loop.sock_accept(
                 self.socket
-            )  # blocking
-            print(f"User {client_address[0]} connected!")
+            )
+            logger.info(f"User {client_address[0]} connected!")
             self.users.append(client_socket)
             self.main_loop.create_task(self.listen_socket(client_socket))
             await super(Server, self).send_data(

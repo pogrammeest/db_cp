@@ -1,3 +1,4 @@
+from utils import logger
 from oop_socket import Socket
 import asyncio
 from datetime import datetime
@@ -11,27 +12,26 @@ class Client(Socket):
     def __init__(self):
         self.chat_is_working = False
         self.messages = ""
-
+        self.tasks = []
         super(Client, self).__init__()
 
     def set_up(self):
         try:
             self.socket.connect((self.address, self.port))
-
         except ConnectionError:
             for i in range(7, -1, -1):
                 if platform == "win32":
                     system("cls")
                 else:
                     system("clear")
-                print("Sorry, server is offline")
-                print("This program will close in %d seconds" % i)
+                logger.info("Sorry, server is offline")
+                logger.info("This program will close in %d seconds" % i)
                 time.sleep(1)
             if platform == "win32":
                 system("cls")
             else:
                 system("clear")
-            print("Good bye...")
+            logger.info("Good bye...")
             time.sleep(1)
             exit(0)
         self.socket.setblocking(False)
@@ -46,23 +46,22 @@ class Client(Socket):
 
         input()
 
-        print("Начнем регистрацию!\nИмя:")
-
+        logger.info("Начнем регистрацию!\nИмя:")
         sending_data["name"] = input()
-        print("\nПочтa:")
+        logger.info("\nПочта:")
         sending_data["email"] = input()
         while not valid_pass:
-            print("\nПароль:")
+            logger.info("\nПароль:")
             sending_data["password"] = input()
-            print("\nповторите пароль:")
+            logger.info("\nповторите пароль:")
             repeat_pass = input()
             if sending_data["password"] == repeat_pass:
                 valid_pass = True
             else:
-                print("Пароли не совподают пожалуйста, повторите попытку!")
-        print("Вы успешно зарегестриравнны!\n")
-        print("\n")
-        print(sending_data)
+                logger.info("Пароли не совпадают пожалуйста, повторите попытку!")
+        logger.info("Вы успешно зарегистрированы!\n")
+        logger.info("\n")
+        logger.info(sending_data)
         input()
         return sending_data
 
@@ -74,10 +73,14 @@ class Client(Socket):
                 try:
                     data = await super(Client, self).listen_socket(listened_socket)
                 except SocketException as exc:
-                    print(exc)
+                    logger.info(exc)
                     self.is_working = False
                     break
                 data = data["data"]
+
+                if data.get("command") == "disconnect":
+                    return
+
                 if data["root"] == "server" and "request" in data:
                     if data["request"] == "chat":
                         if not self.chat_is_working:
@@ -101,17 +104,17 @@ class Client(Socket):
                     system("cls")
                 else:
                     system("clear")
-                print(self.messages)
+                logger.info(self.messages)
             except (SocketException, ConnectionError):
-                print("\n Server is offline...")
+                logger.info("\n Server is offline...")
                 time.sleep(5)
                 exit(0)
 
-    async def send_data(self, data=None):
+    async def send_data(self, **kwargs):
         while True:
-            message = await self.main_loop.run_in_executor(None, input, "")
             if not self.is_working:
                 return
+            message = await self.main_loop.run_in_executor(None, input, "")
 
             encrypted_data = {
                 "root": "user",
@@ -122,12 +125,34 @@ class Client(Socket):
             if not self.chat_is_working:
                 self.messages += "$$>" + message + "\n"
             await super(Client, self).send_data(where=self.socket, data=encrypted_data)
+            if "/exit" == message:
+                return
+
+    async def shutdown(self):
+        if not self.is_working:
+            return
+        logger.info("Завершаем работу клиента...")
+        self.is_working = False
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        try:
+            self.socket.close()
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии сокета: {e}")
 
     async def main(self):
-        await asyncio.gather(
-            self.main_loop.create_task(self.listen_socket(self.socket)),
-            self.main_loop.create_task(self.send_data()),
-        )
+        listen_task = self.main_loop.create_task(self.listen_socket(self.socket))
+        send_task = self.main_loop.create_task(self.send_data())
+
+        self.tasks = [listen_task, send_task]
+
+        try:
+            await asyncio.gather(*self.tasks)
+        except asyncio.CancelledError:
+            logger.info("Main task cancelled")
+        finally:
+            await self.shutdown()
 
 
 if __name__ == "__main__":

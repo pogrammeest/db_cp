@@ -4,14 +4,14 @@ import struct
 import json
 
 from exception import SocketException
-import settings
+from settings import SERVER_ADDRESS, ENCODING
 
 
 class Socket:
     def __init__(self):
-        self.address, self.port = settings.SERVER_ADDRESS
+        self.address, self.port = SERVER_ADDRESS
         self.dataPackageSize = 4096
-        self.encoding = settings.ENCODING
+        self.encoding = ENCODING
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.main_loop = asyncio.new_event_loop()
@@ -69,11 +69,11 @@ class Socket:
             raise SocketException(exc)
 
     async def main(self):
-        raise NotImplemented()
+        raise NotImplemented
 
     def start(self):
         self.is_working = True
         self.main_loop.run_until_complete(self.main())
 
     def set_up(self):
-        raise NotImplemented()
+        raise NotImplemented
