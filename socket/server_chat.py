@@ -1,3 +1,6 @@
+import bcrypt
+import prettytable
+
 from oop_socket import Socket
 from utils import logger
 from exception import SocketException
@@ -12,13 +15,9 @@ class Server(Socket):
         self.db = WorkingWithDataBase()
         self.confirm_shut_down = False
         self.users = []
-        self.authorized_users = []
-        self.admins = []
+        self.authorized_users = {}
+        self.admins = {}
         self.registered_commands = {
-            "/help": {
-                "root": "server",
-                "message_text": """Список текущих доступных команд:\n/help - описание\n/login - авторизоваться\n/db - увидеть список доступных таблиц\n/chat - включить/выключить режим чата\n/clear - очистить экран\n/reg - регистрация""",
-            },
             "/chat": {"root": "server", "request": "chat"},
             "/clear": {"root": "server", "request": "clear"},
         }
@@ -38,34 +37,191 @@ class Server(Socket):
                 user.close()
 
     def is_admin(self, user_socket):
-        for admin in self.admins:
-            if user_socket == admin["socket"]:
-                return True
+        if self.admins.get(user_socket):
+            return True
         return False
+
+    def get_authorized_users(self):
+        return list(self.authorized_users.keys()) + list(self.admins.keys())
+
+    def get_help_message(self, is_admin=False):
+        base_commands = [
+            "/help - описание",
+            "/login - авторизоваться",
+            "/db - увидеть список доступных таблиц",
+            "/chat - включить/выключить режим чата",
+            "/clear - очистить экран",
+            "/reg - регистрация",
+        ]
+        admin_commands = [
+            "/db_del - удаление таблиц",
+            "/db_update - обновление таблиц",
+            "/shut_down - выключение сервера (требуется подтверждение)",
+            "/disconnection_server [пароль] - подтверждение выключения",
+        ]
+        commands = base_commands + admin_commands if is_admin else base_commands
+        return {
+            "root": "server",
+            "message_text": "Список доступных команд:\n" + "\n".join(commands),
+        }
 
     def reg(self, data):
         try:
-            login, email, password = (
+            username, email, password = (
                 data["message_text"].split()[1],
                 data["message_text"].split()[2],
                 data["message_text"].split()[3],
             )
+
+            user_exists = self.db.select_one_row(
+                table="users", condition=f"username = '{username}' OR email = '{email}'"
+            )
+            if user_exists:
+                return {
+                    "root": "server",
+                    "message_text": "Пользователь с таким именем или email уже существует.",
+                }
+
+            # Хешируем пароль
+            hashed_password = bcrypt.hashpw(
+                password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
             self.db.insert(
-                table="gamers",
-                columns="name, email, password",
-                values=(login, email, password),
+                table="users",
+                columns="username, email, password_hash, role_id",
+                values=(username, email, hashed_password, 3),
             )
             return {
                 "root": "server",
-                "message_text": "Регистрация прошла успешно, теперь входите!",
+                "message_text": "Регистрация успешна! Введите /login [username] [password] для входа.",
             }
         except IndexError:
             return {
                 "root": "server",
-                "message_text": "Пожалуйста, введите /reg [login] [email] [password]",
+                "message_text": "Формат: /reg [username] [email] [password]",
             }
         except Exception as exc:
             logger.info(exc)
+            return {
+                "root": "server",
+                "message_text": f"Ошибка при регистрации: {exc}",
+            }
+
+    def login(self, data, listened_socket):
+        try:
+            username, password = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+            )
+
+            user = self.db.select_one_row(
+                table="users",
+                columns="id, username, password_hash",
+                condition=f"username = '{username}'",
+            )
+
+            if not user:
+                return {
+                    "root": "server",
+                    "message_text": "Неверный логин или пароль.",
+                }
+
+            user_id, _, stored_hash = user
+
+            if not bcrypt.checkpw(
+                password.encode("utf-8"), stored_hash.encode("utf-8")
+            ):
+                return {
+                    "root": "server",
+                    "message_text": "Неверный логин или пароль.",
+                }
+
+            for sock in self.get_authorized_users():
+                if sock["socket"] == listened_socket:
+                    raise SocketException
+
+            # Проверяем роль
+            is_admin = self.db.select_one_row(
+                table="users u JOIN roles r ON u.role_id = r.id",
+                columns="r.name",
+                condition=f"u.id = {user_id} AND r.name = 'admin'",
+            )
+
+            if is_admin:
+                self.admins[listened_socket] = user_id
+                self.registered_commands["/help"][
+                    "message_text"
+                ] += "\n  /db_del - удаление таблиц\n  /db_update - обновление таблиц"
+            else:
+                self.authorized_users[listened_socket] = user_id
+
+            return {
+                "root": "server",
+                "message_text": f"Добро пожаловать, {username}!",
+            }
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": "Формат: /login [username] [password]",
+            }
+        except SocketException:
+            return {
+                "root": "server",
+                "message_text": "Вы уже авторизованы!",
+            }
+        except Exception as exc:
+            logger.info(exc)
+            return {
+                "root": "server",
+                "message_text": f"Ошибка при авторизации: {exc}",
+            }
+
+    def my_projects(self, user_id: int):
+        try:
+            projects = self.db.get_my_projects(user_id)
+            if not projects:
+                return "У вас пока нет проектов."
+
+            table = prettytable.PrettyTable()
+            table.field_names = ["ID", "Название", "Описание", "Создано"]
+            for row in projects:
+                table.add_row(row)
+            return {
+                "root": "server",
+                "message_text": "Твои проекты: \n" + str(table),
+                "request": "show_db",
+            }
+        except Exception as e:
+            logger.error(f"[my_projects] Ошибка: {e}")
+            return "Ошибка при получении проектов."
+
+    def my_tasks(self, user_id: int):
+        try:
+            tasks = self.db.get_my_tasks(user_id)
+            if not tasks:
+                return "У вас нет назначенных задач."
+
+            table = prettytable.PrettyTable()
+            table.field_names = [
+                "ID",
+                "Название",
+                "Описание",
+                "Статус",
+                "Создано",
+                "Срок",
+                "Проект",
+                "Автор",
+            ]
+            for row in tasks:
+                table.add_row(row)
+            return {
+                "root": "server",
+                "message_text": "Твои задачи: \n" + str(table),
+                "request": "show_db",
+            }
+        except Exception as e:
+            logger.error(f"[my_tasks] Ошибка: {e}")
+            return "Ошибка при получении задач."
 
     def db_del(self, data):
         try:
@@ -142,56 +298,67 @@ class Server(Socket):
                 "request": "show_db",
             }
 
-    def login(self, data, listened_socket):
+    def assign_task(self, task_id: int, user_id: int):
         try:
-            login, password = (
-                data["message_text"].split()[1],
-                data["message_text"].split()[2],
+            success = self.db.assign_task(task_id, user_id)
+            return (
+                "Пользователь назначен на задачу."
+                if success
+                else "Ошибка: задача не найдена или пользователь уже назначен."
             )
-            user = self.db.select_one_row(
-                table="gamers",
-                condition=f"name = '{login}' and password = '{password}'",
-            )
-            for sock in self.authorized_users + self.admins:
-                if listened_socket == sock["socket"]:
-                    raise SocketException
-            if user is None:
-                return {
-                    "root": "server",
-                    "message_text": "Пользователь не найден!",
-                }
-            else:
-                if user[-1]:
-                    self.admins.append({"id": user[0], "socket": listened_socket})
-                    self.registered_commands["/help"][
-                        "message_text"
-                    ] += "\n  /db_del - удаление таблиц \n  /db_update - обновление таблиц"
-                else:
-                    self.authorized_users.append(
-                        {"id": user[0], "socket": listened_socket}
-                    )
-                return {"root": "server", "message_text": "Вы вошли!"}
-        except IndexError:
-            return {
-                "root": "server",
-                "message_text": "Пожалуйста, введите /login [логин] [пароль]",
-            }
-        except SocketException:
-            return {
-                "root": "server",
-                "message_text": "Вы уже авторизовались!",
-            }
-        finally:
-            logger.info(self.admins)
+        except Exception as e:
+            logger.error(f"[assign_task] Ошибка: {e}")
+            return "Ошибка при назначении задачи."
+
+    def add_task_comment(self, task_id: int, user_id: int, message: str):
+        try:
+            self.db.add_task_comment(task_id, user_id, message)
+            return "Комментарий добавлен."
+        except Exception as e:
+            logger.error(f"[add_task_comment] Ошибка: {e}")
+            return "Ошибка при добавлении комментария."
+
+    def get_task_comments(self, task_id: int):
+        try:
+            comments = self.db.get_task_comments(task_id)
+            if not comments:
+                return "Комментариев нет."
+
+            table = prettytable.PrettyTable()
+            table.field_names = ["ID", "Пользователь", "Комментарий", "Дата"]
+            for row in comments:
+                table.add_row(row)
+            return str(table)
+        except Exception as e:
+            logger.error(f"[get_task_comments] Ошибка: {e}")
+            return "Ошибка при получении комментариев."
+
+    def create_project(self, name: str, description: str, created_by: int):
+        try:
+            self.db.create_project(name, description, created_by)
+            return "Проект успешно создан."
+        except Exception as e:
+            logger.error(f"[create_project] Ошибка: {e}")
+            return "Ошибка при создании проекта."
 
     def verify_request(self, data: dict, listened_socket: Socket):
         sending_data = {}
-        if data["message_text"] in self.registered_commands:
-            sending_data = self.registered_commands[data["message_text"]]
+        if data["message_text"] == "/help":
+            sending_data = self.get_help_message(
+                is_admin=self.is_admin(listened_socket)
+            )
         elif "/db_del" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_del(data)
         elif "/db_update" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_update(data)
+        # elif "/my_projects" in data["message_text"] and self.authorized_users.get(
+        #     listened_socket, False
+        # ):
+        #     sending_data = self.my_projects(self.authorized_users[listened_socket])
+        elif "/my_tasks" in data["message_text"] and self.authorized_users.get(
+            listened_socket, False
+        ):
+            sending_data = self.my_tasks(self.authorized_users[listened_socket])
         elif "/db" in data["message_text"]:
             sending_data = {
                 "root": "server",
