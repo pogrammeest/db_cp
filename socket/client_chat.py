@@ -66,36 +66,34 @@ class Client(Socket):
     async def listen_socket(self, listened_socket):
         while True:
             try:
-                timeout = False
                 if not self.is_working:
                     return
                 try:
-                    data = await asyncio.wait_for(
-                        super(Client, self).listen_socket(listened_socket), timeout=3
-                    )
+                    if self.is_sended:
+                        data = await asyncio.wait_for(
+                            super(Client, self).listen_socket(listened_socket),
+                            timeout=3,
+                        )
+                    else:
+                        data = await super(Client, self).listen_socket(listened_socket)
                 except asyncio.TimeoutError:
-                    print("skipped")
-                    timeout = True
-                    data = {}
-                except SocketException as exc:
-                    logger.info(exc)
-                    self.is_working = False
-                    break
-
-                if not timeout and self.is_sended:
-                    self.is_sended = False
-                if timeout and self.is_sended:
                     self.is_working = False
                     return
-                if timeout:
-                    continue
+                except SocketException:
+                    logger.info(
+                        "Соединение с сервером потеряно, нажмите Enter, чтобы выйти из программы."
+                    )
+                    self.is_working = False
+                    return
+                if self.is_sended:
+                    self.is_sended = False
 
-                data = data["data"]
+                data = data.get("data", {})
 
                 if data.get("command") == "disconnect":
                     return
 
-                if data["root"] == "server" and "request" in data:
+                if data.get("root") == "server" and "request" in data:
                     if data["request"] == "chat":
                         if not self.chat_is_working:
                             self.chat_is_working = True
@@ -105,13 +103,13 @@ class Client(Socket):
                             self.messages += f"$$SERVER MESSAGE$$: чат выключен\n"
                     elif data["request"] == "clear":
                         self.messages = "Экран очищен\n"
-                    # elif data["request"] == "show_db":
-                    #     self.messages += data["message_text"] + "\n"
+                    elif data["request"] == "show_db":
+                        self.messages += data["message_text"] + "\n"
                     elif data["request"] == "reg":
                         self.messages = "Экран очищен\n"
-                elif data["root"] == "server":
+                elif data.get("root") == "server":
                     self.messages += f"$$SERVER MESSAGE$$:{data['message_text']}\n"
-                elif data["root"] == "user" and self.chat_is_working:
+                elif data.get("root") == "user" and self.chat_is_working:
                     self.messages += f"{data['message_time']}:{data['message_text']}\n"
 
                 if platform == "win32":
