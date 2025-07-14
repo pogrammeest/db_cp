@@ -65,6 +65,7 @@ class Socket:
             json.JSONDecodeError,
             IndexError,
             ConnectionError,
+            TimeoutError,
         ) as exc:
             raise SocketException(exc)
 

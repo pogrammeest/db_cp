@@ -30,7 +30,7 @@ class Server(Socket):
         self.socket.setblocking(False)
         logger.info("Server listing...")
 
-    async def send_data(self, **kwargs):
+    async def send_data_to_everyone(self, **kwargs):
         for user in self.users:
             try:
                 await super(Server, self).send_data(where=user, data=kwargs["data"])
@@ -197,49 +197,51 @@ class Server(Socket):
     def my_projects(self, user_id: int):
         try:
             projects = self.db.get_my_projects(user_id)
-            if not projects:
-                return "У вас пока нет проектов."
-
-            table = prettytable.PrettyTable()
-            table.field_names = ["ID", "Название", "Описание", "Создано"]
-            for row in projects:
-                table.add_row(row)
-            return {
-                "root": "server",
-                "message_text": "Твои проекты: \n" + str(table),
-                "request": "show_db",
-            }
+            if projects:
+                table = prettytable.PrettyTable()
+                table.field_names = ["ID", "Название", "Описание", "Создано"]
+                for row in projects:
+                    table.add_row(row)
+                msg = "Твои проекты: \n" + str(table)
+            else:
+                msg = "У вас пока нет проектов."
         except Exception as e:
             logger.error(f"[my_projects] Ошибка: {e}")
-            return "Ошибка при получении проектов."
+            msg = "Ошибка при получении проектов."
+        return {
+            "root": "server",
+            "message_text": msg,
+            "request": "show_db",
+        }
 
     def my_tasks(self, user_id: int):
         try:
             tasks = self.db.get_my_tasks(user_id)
-            if not tasks:
-                return "У вас нет назначенных задач."
-
-            table = prettytable.PrettyTable()
-            table.field_names = [
-                "ID",
-                "Название",
-                "Описание",
-                "Статус",
-                "Создано",
-                "Срок",
-                "Проект",
-                "Автор",
-            ]
-            for row in tasks:
-                table.add_row(row)
-            return {
-                "root": "server",
-                "message_text": "Твои задачи: \n" + str(table),
-                "request": "show_db",
-            }
+            if tasks:
+                table = prettytable.PrettyTable()
+                table.field_names = [
+                    "ID",
+                    "Название",
+                    "Описание",
+                    "Статус",
+                    "Создано",
+                    "Срок",
+                    "Проект",
+                    "Автор",
+                ]
+                for row in tasks:
+                    table.add_row(row)
+                msg = "Твои задачи: \n" + str(table)
+            else:
+                msg = "У вас нет назначенных задач."
         except Exception as e:
             logger.error(f"[my_tasks] Ошибка: {e}")
-            return "Ошибка при получении задач."
+            msg = "Ошибка при получении задач."
+        return {
+            "root": "server",
+            "message_text": msg,
+            "request": "show_db",
+        }
 
     def db_del(self, data):
         try:
@@ -359,7 +361,7 @@ class Server(Socket):
             logger.error(f"[create_project] Ошибка: {e}")
             return "Ошибка при создании проекта."
 
-    def verify_request(self, data: dict, listened_socket: Socket):
+    def verify_request(self, data: dict, listened_socket: socket.socket):
         sending_data = {}
         if data["message_text"] == "/help":
             sending_data = self.get_help_message(self.get_role(listened_socket))
@@ -391,7 +393,6 @@ class Server(Socket):
                 "root": "server",
                 "message_text": "Похоже такой команды нет или вы не авторизованны, пожалуйста введите /help для получение списка доступных команд",
             }
-
         return sending_data
 
     async def listen_socket(self, listened_socket: socket.socket):
@@ -400,17 +401,19 @@ class Server(Socket):
                 data = await super(Server, self).listen_socket(listened_socket)
                 data = data["data"]
                 if data["chat_is_working"] and data["message_text"] != "/chat":
-                    await self.send_data(data=data)
-                elif "ping" in data["message_text"]:
-                    await super(Server, self).send_data(
+                    await self.send_data_to_everyone(data=data)
+                elif "/start" in data["message_text"]:
+
+                    await self.send_data(
                         where=listened_socket,
                         data={
                             "root": "server",
-                            "command": "pong",
+                            "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных команд напиши /help",
+                            "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
                         },
                     )
                 elif "/exit" in data["message_text"]:
-                    await super(Server, self).send_data(
+                    await self.send_data(
                         where=listened_socket,
                         data={
                             "root": "server",
@@ -421,13 +424,15 @@ class Server(Socket):
                     self.authorized_users.pop(listened_socket, None)
                     self.admins.pop(listened_socket, None)
                     self.users.remove(listened_socket)
-                    logger.info(f"User {listened_socket.getsockname()[0]} disconnected!")
+                    logger.info(
+                        f"User {listened_socket.getsockname()[0]} disconnected!"
+                    )
                     listened_socket.close()
                     return
                 elif "/shut_down" in data["message_text"]:
                     if self.is_admin(listened_socket):
                         self.confirm_shut_down = True
-                        await super(Server, self).send_data(
+                        await self.send_data(
                             where=listened_socket,
                             data={
                                 "root": "server",
@@ -435,7 +440,7 @@ class Server(Socket):
                             },
                         )
                     else:
-                        await super(Server, self).send_data(
+                        await self.send_data(
                             where=listened_socket,
                             data={
                                 "root": "server",
@@ -444,7 +449,7 @@ class Server(Socket):
                         )
                 elif "/disconnection_server" in data["message_text"]:
                     if not self.is_admin(listened_socket):
-                        await super(Server, self).send_data(
+                        await self.send_data(
                             where=listened_socket,
                             data={
                                 "root": "server",
@@ -452,7 +457,7 @@ class Server(Socket):
                             },
                         )
                     elif not self.confirm_shut_down:
-                        await super(Server, self).send_data(
+                        await self.send_data(
                             where=listened_socket,
                             data={
                                 "root": "server",
@@ -463,7 +468,7 @@ class Server(Socket):
                         try:
                             if data["message_text"].split()[1] == "4321":
                                 # TODO: переписать блокирующие функции так, чтобы можно было выключить сервер и клиенты это обработали
-                                await super(Server, self).send_data(
+                                await self.send_data(
                                     where=listened_socket,
                                     data={
                                         "root": "server",
@@ -472,7 +477,7 @@ class Server(Socket):
                                 )
                             else:
                                 self.confirm_shut_down = False
-                                await super(Server, self).send_data(
+                                await self.send_data(
                                     where=listened_socket,
                                     data={
                                         "root": "server",
@@ -481,7 +486,7 @@ class Server(Socket):
                                 )
                         except Exception as exc:
                             logger.info(exc)
-                            await super(Server, self).send_data(
+                            await self.send_data(
                                 where=listened_socket,
                                 data={
                                     "root": "server",
@@ -489,12 +494,8 @@ class Server(Socket):
                                 },
                             )
                 else:
-                    sending_data = self.verify_request(
-                        data, listened_socket=listened_socket
-                    )
-                    await super(Server, self).send_data(
-                        where=listened_socket, data=sending_data
-                    )
+                    sending_data = self.verify_request(data, listened_socket)
+                    await self.send_data(where=listened_socket, data=sending_data)
             except SocketException as exc:
                 logger.info(
                     f"User {listened_socket.getsockname()[0]} has disconnected."
@@ -511,14 +512,6 @@ class Server(Socket):
             logger.info(f"User {client_address[0]} connected!")
             self.users.append(client_socket)
             self.main_loop.create_task(self.listen_socket(client_socket))
-            await super(Server, self).send_data(
-                where=client_socket,
-                data={
-                    "root": "server",
-                    "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных команд напиши /help",
-                    "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
-                },
-            )
 
     async def main(self):
         await self.main_loop.create_task(self.accept_socket())
