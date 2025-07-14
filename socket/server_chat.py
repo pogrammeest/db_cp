@@ -1,3 +1,5 @@
+import socket
+from typing import Literal
 import bcrypt
 import prettytable
 
@@ -41,10 +43,17 @@ class Server(Socket):
             return True
         return False
 
+    def get_role(self, user_socket) -> Literal["unauthorized", "authorized", "admin"]:
+        if self.admins.get(user_socket):
+            return "admin"
+        if self.authorized_users.get(user_socket):
+            return "authorized"
+        return "unauthorized"
+
     def get_authorized_users(self):
         return list(self.authorized_users.keys()) + list(self.admins.keys())
 
-    def get_help_message(self, is_admin=False):
+    def get_help_message(self, role: Literal["unauthorized", "authorized", "admin"]):
         base_commands = [
             "/help - описание",
             "/login - авторизоваться",
@@ -53,13 +62,22 @@ class Server(Socket):
             "/clear - очистить экран",
             "/reg - регистрация",
         ]
+        authorized_commands = [
+            "/my_projects - мои проекты",
+            "/my_tasks - мои задачи",
+        ]
         admin_commands = [
             "/db_del - удаление таблиц",
             "/db_update - обновление таблиц",
             "/shut_down - выключение сервера (требуется подтверждение)",
             "/disconnection_server [пароль] - подтверждение выключения",
         ]
-        commands = base_commands + admin_commands if is_admin else base_commands
+
+        commands = base_commands
+        if role == "admin":
+            commands += authorized_commands + admin_commands
+        if role == "authorized":
+            commands += authorized_commands
         return {
             "root": "server",
             "message_text": "Список доступных команд:\n" + "\n".join(commands),
@@ -344,17 +362,15 @@ class Server(Socket):
     def verify_request(self, data: dict, listened_socket: Socket):
         sending_data = {}
         if data["message_text"] == "/help":
-            sending_data = self.get_help_message(
-                is_admin=self.is_admin(listened_socket)
-            )
+            sending_data = self.get_help_message(self.get_role(listened_socket))
         elif "/db_del" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_del(data)
         elif "/db_update" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_update(data)
-        # elif "/my_projects" in data["message_text"] and self.authorized_users.get(
-        #     listened_socket, False
-        # ):
-        #     sending_data = self.my_projects(self.authorized_users[listened_socket])
+        elif "/my_projects" in data["message_text"] and self.authorized_users.get(
+            listened_socket, False
+        ):
+            sending_data = self.my_projects(self.authorized_users[listened_socket])
         elif "/my_tasks" in data["message_text"] and self.authorized_users.get(
             listened_socket, False
         ):
@@ -373,18 +389,26 @@ class Server(Socket):
         else:
             sending_data = {
                 "root": "server",
-                "message_text": "Похоже такой команды нет, пожалуйста введите /help для получение списка",
+                "message_text": "Похоже такой команды нет или вы не авторизованны, пожалуйста введите /help для получение списка доступных команд",
             }
 
         return sending_data
 
-    async def listen_socket(self, listened_socket=None):
+    async def listen_socket(self, listened_socket: socket.socket):
         while True:
             try:
                 data = await super(Server, self).listen_socket(listened_socket)
                 data = data["data"]
                 if data["chat_is_working"] and data["message_text"] != "/chat":
                     await self.send_data(data=data)
+                elif "ping" in data["message_text"]:
+                    await super(Server, self).send_data(
+                        where=listened_socket,
+                        data={
+                            "root": "server",
+                            "command": "pong",
+                        },
+                    )
                 elif "/exit" in data["message_text"]:
                     await super(Server, self).send_data(
                         where=listened_socket,
@@ -393,7 +417,11 @@ class Server(Socket):
                             "command": "disconnect",
                         },
                     )
+
+                    self.authorized_users.pop(listened_socket, None)
+                    self.admins.pop(listened_socket, None)
                     self.users.remove(listened_socket)
+                    logger.info(f"User {listened_socket.getsockname()[0]} disconnected!")
                     listened_socket.close()
                     return
                 elif "/shut_down" in data["message_text"]:
