@@ -497,6 +497,7 @@ class Server(Socket):
 
     async def main(self):
         await self.accept_socket()
+        # TODO закрыть все бэкграунд таски
         logger.info("Server is done...")
 
 
