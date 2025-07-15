@@ -1,3 +1,4 @@
+import asyncio
 import socket
 from typing import Literal
 import bcrypt
@@ -446,7 +447,7 @@ class Server(Socket):
                     else:
                         try:
                             if data["message_text"].split()[1] == "4321":
-                                # TODO: shut_down the server
+                                logger.info("Shut down server...")
                                 await self.send_data(
                                     where=listened_socket,
                                 )
@@ -482,15 +483,21 @@ class Server(Socket):
 
     async def accept_socket(self):
         while True:
-            client_socket, client_address = await self.main_loop.sock_accept(
-                self.socket
-            )
+            if not self.is_working:
+                return
+            try:
+                client_socket, client_address = await asyncio.wait_for(
+                    self.main_loop.sock_accept(self.socket), timeout=1
+                )
+            except asyncio.TimeoutError:
+                continue
             logger.info(f"User {client_address[0]} connected!")
             self.users.append(client_socket)
             self.main_loop.create_task(self.listen_socket(client_socket))
 
     async def main(self):
         await self.accept_socket()
+        logger.info("Server is done...")
 
 
 if __name__ == "__main__":

@@ -1,2 +1,2 @@
 ENCODING = "utf-8"
-SERVER_ADDRESS = ("localhost", 10005)
+SERVER_ADDRESS = ("localhost", 10006)
