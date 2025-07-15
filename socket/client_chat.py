@@ -1,3 +1,4 @@
+import uuid
 from utils import logger
 from oop_socket import Socket
 import asyncio
@@ -13,6 +14,7 @@ class Client(Socket):
         self.chat_is_working = False
         self.messages = ""
         self.tasks = []
+        self.is_sended = False
         super(Client, self).__init__()
 
     def set_up(self):
@@ -27,10 +29,6 @@ class Client(Socket):
                 logger.info("Sorry, server is offline")
                 logger.info("This program will close in %d seconds" % i)
                 time.sleep(1)
-            if platform == "win32":
-                system("cls")
-            else:
-                system("clear")
             logger.info("Good bye...")
             time.sleep(1)
             exit(0)
@@ -71,17 +69,31 @@ class Client(Socket):
                 if not self.is_working:
                     return
                 try:
-                    data = await super(Client, self).listen_socket(listened_socket)
-                except SocketException as exc:
-                    logger.info(exc)
+                    if self.is_sended:
+                        data = await asyncio.wait_for(
+                            super(Client, self).listen_socket(listened_socket),
+                            timeout=3,
+                        )
+                    else:
+                        data = await super(Client, self).listen_socket(listened_socket)
+                except asyncio.TimeoutError:
                     self.is_working = False
-                    break
-                data = data["data"]
+                    return
+                except SocketException:
+                    logger.info(
+                        "Соединение с сервером потеряно, нажмите Enter, чтобы выйти из программы."
+                    )
+                    self.is_working = False
+                    return
+                if self.is_sended:
+                    self.is_sended = False
+
+                data = data.get("data", {})
 
                 if data.get("command") == "disconnect":
                     return
 
-                if data["root"] == "server" and "request" in data:
+                if data.get("root") == "server" and "request" in data:
                     if data["request"] == "chat":
                         if not self.chat_is_working:
                             self.chat_is_working = True
@@ -95,9 +107,9 @@ class Client(Socket):
                         self.messages += data["message_text"] + "\n"
                     elif data["request"] == "reg":
                         self.messages = "Экран очищен\n"
-                elif data["root"] == "server":
+                elif data.get("root") == "server":
                     self.messages += f"$$SERVER MESSAGE$$:{data['message_text']}\n"
-                elif data["root"] == "user" and self.chat_is_working:
+                elif data.get("root") == "user" and self.chat_is_working:
                     self.messages += f"{data['message_time']}:{data['message_text']}\n"
 
                 if platform == "win32":
@@ -115,7 +127,6 @@ class Client(Socket):
             if not self.is_working:
                 return
             message = await self.main_loop.run_in_executor(None, input, "")
-
             encrypted_data = {
                 "root": "user",
                 "chat_is_working": self.chat_is_working,
@@ -125,6 +136,7 @@ class Client(Socket):
             if not self.chat_is_working:
                 self.messages += "$$>" + message + "\n"
             await super(Client, self).send_data(where=self.socket, data=encrypted_data)
+            self.is_sended = True
             if "/exit" == message:
                 return
 
@@ -141,10 +153,19 @@ class Client(Socket):
         except Exception as e:
             logger.error(f"Ошибка при закрытии сокета: {e}")
 
+    async def start_msg(self):
+        data = {
+            "root": "user",
+            "chat_is_working": self.chat_is_working,
+            "message_text": "/start",
+            "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
+        }
+        await super(Client, self).send_data(where=self.socket, data=data)
+
     async def main(self):
+        await self.start_msg()
         listen_task = self.main_loop.create_task(self.listen_socket(self.socket))
         send_task = self.main_loop.create_task(self.send_data())
-
         self.tasks = [listen_task, send_task]
 
         try:

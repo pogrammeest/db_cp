@@ -1,3 +1,9 @@
+import asyncio
+import socket
+from typing import Literal
+import bcrypt
+import prettytable
+
 from oop_socket import Socket
 from utils import logger
 from exception import SocketException
@@ -10,15 +16,10 @@ class Server(Socket):
     def __init__(self):
         super(Server, self).__init__()
         self.db = WorkingWithDataBase()
-        self.confirm_shut_down = False
         self.users = []
-        self.authorized_users = []
-        self.admins = []
+        self.authorized_users = {}
+        self.admins = {}
         self.registered_commands = {
-            "/help": {
-                "root": "server",
-                "message_text": """Список текущих доступных команд:\n/help - описание\n/login - авторизоваться\n/db - увидеть список доступных таблиц\n/chat - включить/выключить режим чата\n/clear - очистить экран\n/reg - регистрация""",
-            },
             "/chat": {"root": "server", "request": "chat"},
             "/clear": {"root": "server", "request": "clear"},
         }
@@ -29,7 +30,7 @@ class Server(Socket):
         self.socket.setblocking(False)
         logger.info("Server listing...")
 
-    async def send_data(self, **kwargs):
+    async def send_data_to_everyone(self, **kwargs):
         for user in self.users:
             try:
                 await super(Server, self).send_data(where=user, data=kwargs["data"])
@@ -38,34 +39,207 @@ class Server(Socket):
                 user.close()
 
     def is_admin(self, user_socket):
-        for admin in self.admins:
-            if user_socket == admin["socket"]:
-                return True
+        if self.admins.get(user_socket):
+            return True
         return False
+
+    def get_role(self, user_socket) -> Literal["unauthorized", "authorized", "admin"]:
+        if self.admins.get(user_socket):
+            return "admin"
+        if self.authorized_users.get(user_socket):
+            return "authorized"
+        return "unauthorized"
+
+    @property
+    def admin_and_authorized_users(self):
+        return self.authorized_users | self.admins
+
+    def get_help_message(self, role: Literal["unauthorized", "authorized", "admin"]):
+        base_commands = [
+            "/help - описание",
+            "/login - авторизоваться",
+            "/db - увидеть список доступных таблиц",
+            "/chat - включить/выключить режим чата",
+            "/clear - очистить экран",
+            "/reg - регистрация",
+        ]
+        authorized_commands = [
+            "/my_projects - мои проекты",
+            "/my_tasks - мои задачи",
+        ]
+        admin_commands = [
+            "/db_del - удаление таблиц",
+            "/db_update - обновление таблиц",
+            "/shut_down - выключение сервера (требуется подтверждение)",
+            "/disconnection_server [пароль] - подтверждение выключения",
+        ]
+
+        commands = base_commands
+        if role == "admin":
+            commands += authorized_commands + admin_commands
+        if role == "authorized":
+            commands += authorized_commands
+        return {
+            "root": "server",
+            "message_text": "Список доступных команд:\n" + "\n".join(commands),
+        }
 
     def reg(self, data):
         try:
-            login, email, password = (
+            username, email, password = (
                 data["message_text"].split()[1],
                 data["message_text"].split()[2],
                 data["message_text"].split()[3],
             )
+
+            user_exists = self.db.select_one_row(
+                table="users", condition=f"username = '{username}' OR email = '{email}'"
+            )
+            if user_exists:
+                return {
+                    "root": "server",
+                    "message_text": "Пользователь с таким именем или email уже существует.",
+                }
+
+            # Хешируем пароль
+            hashed_password = bcrypt.hashpw(
+                password.encode("utf-8"), bcrypt.gensalt()
+            ).decode("utf-8")
             self.db.insert(
-                table="gamers",
-                columns="name, email, password",
-                values=(login, email, password),
+                table="users",
+                columns="username, email, password_hash, role_id",
+                values=(username, email, hashed_password, 3),
             )
             return {
                 "root": "server",
-                "message_text": "Регистрация прошла успешно, теперь входите!",
+                "message_text": "Регистрация успешна! Введите /login [username] [password] для входа.",
             }
         except IndexError:
             return {
                 "root": "server",
-                "message_text": "Пожалуйста, введите /reg [login] [email] [password]",
+                "message_text": "Формат: /reg [username] [email] [password]",
             }
         except Exception as exc:
             logger.info(exc)
+            return {
+                "root": "server",
+                "message_text": f"Ошибка при регистрации: {exc}",
+            }
+
+    def login(self, data, listened_socket):
+        try:
+            username, password = (
+                data["message_text"].split()[1],
+                data["message_text"].split()[2],
+            )
+
+            user = self.db.select_one_row(
+                table="users",
+                columns="id, username, password_hash",
+                condition=f"username = '{username}'",
+            )
+
+            if not user:
+                return {
+                    "root": "server",
+                    "message_text": "Неверный логин или пароль.",
+                }
+
+            user_id, _, stored_hash = user
+
+            if not bcrypt.checkpw(
+                password.encode("utf-8"), stored_hash.encode("utf-8")
+            ):
+                return {
+                    "root": "server",
+                    "message_text": "Неверный логин или пароль.",
+                }
+
+            for sock in self.admin_and_authorized_users.keys():
+                if sock == listened_socket:
+                    raise SocketException
+
+            # Проверяем роль
+            is_admin = self.db.select_one_row(
+                table="users u JOIN roles r ON u.role_id = r.id",
+                columns="r.name",
+                condition=f"u.id = {user_id} AND r.name = 'admin'",
+            )
+
+            if is_admin:
+                self.admins[listened_socket] = user_id
+            else:
+                self.authorized_users[listened_socket] = user_id
+
+            return {
+                "root": "server",
+                "message_text": f"Добро пожаловать, {username}!",
+            }
+        except IndexError:
+            return {
+                "root": "server",
+                "message_text": "Формат: /login [username] [password]",
+            }
+        except SocketException:
+            return {
+                "root": "server",
+                "message_text": "Вы уже авторизованы!",
+            }
+        except Exception as exc:
+            logger.info(exc)
+            return {
+                "root": "server",
+                "message_text": f"Ошибка при авторизации: {exc}",
+            }
+
+    def my_projects(self, user_id: int):
+        try:
+            projects = self.db.get_my_projects(user_id)
+            if projects:
+                table = prettytable.PrettyTable()
+                table.field_names = ["ID", "Название", "Описание", "Создано"]
+                for row in projects:
+                    table.add_row(row)
+                msg = "Твои проекты: \n" + str(table)
+            else:
+                msg = "У вас пока нет проектов."
+        except Exception as e:
+            logger.error(f"[my_projects] Ошибка: {e}")
+            msg = "Ошибка при получении проектов."
+        return {
+            "root": "server",
+            "message_text": msg,
+            "request": "show_db",
+        }
+
+    def my_tasks(self, user_id: int):
+        try:
+            tasks = self.db.get_my_tasks(user_id)
+            if tasks:
+                table = prettytable.PrettyTable()
+                table.field_names = [
+                    "ID",
+                    "Название",
+                    "Описание",
+                    "Статус",
+                    "Создано",
+                    "Срок",
+                    "Проект",
+                    "Автор",
+                ]
+                for row in tasks:
+                    table.add_row(row)
+                msg = "Твои задачи: \n" + str(table)
+            else:
+                msg = "У вас нет назначенных задач."
+        except Exception as e:
+            logger.error(f"[my_tasks] Ошибка: {e}")
+            msg = "Ошибка при получении задач."
+        return {
+            "root": "server",
+            "message_text": msg,
+            "request": "show_db",
+        }
 
     def db_del(self, data):
         try:
@@ -142,56 +316,73 @@ class Server(Socket):
                 "request": "show_db",
             }
 
-    def login(self, data, listened_socket):
+    def assign_task(self, task_id: int, user_id: int):
         try:
-            login, password = (
-                data["message_text"].split()[1],
-                data["message_text"].split()[2],
+            success = self.db.assign_task(task_id, user_id)
+            return (
+                "Пользователь назначен на задачу."
+                if success
+                else "Ошибка: задача не найдена или пользователь уже назначен."
             )
-            user = self.db.select_one_row(
-                table="gamers",
-                condition=f"name = '{login}' and password = '{password}'",
-            )
-            for sock in self.authorized_users + self.admins:
-                if listened_socket == sock["socket"]:
-                    raise SocketException
-            if user is None:
-                return {
-                    "root": "server",
-                    "message_text": "Пользователь не найден!",
-                }
-            else:
-                if user[-1]:
-                    self.admins.append({"id": user[0], "socket": listened_socket})
-                    self.registered_commands["/help"][
-                        "message_text"
-                    ] += "\n  /db_del - удаление таблиц \n  /db_update - обновление таблиц"
-                else:
-                    self.authorized_users.append(
-                        {"id": user[0], "socket": listened_socket}
-                    )
-                return {"root": "server", "message_text": "Вы вошли!"}
-        except IndexError:
-            return {
-                "root": "server",
-                "message_text": "Пожалуйста, введите /login [логин] [пароль]",
-            }
-        except SocketException:
-            return {
-                "root": "server",
-                "message_text": "Вы уже авторизовались!",
-            }
-        finally:
-            logger.info(self.admins)
+        except Exception as e:
+            logger.error(f"[assign_task] Ошибка: {e}")
+            return "Ошибка при назначении задачи."
 
-    def verify_request(self, data: dict, listened_socket: Socket):
+    def add_task_comment(self, task_id: int, user_id: int, message: str):
+        try:
+            self.db.add_task_comment(task_id, user_id, message)
+            return "Комментарий добавлен."
+        except Exception as e:
+            logger.error(f"[add_task_comment] Ошибка: {e}")
+            return "Ошибка при добавлении комментария."
+
+    def get_task_comments(self, task_id: int):
+        try:
+            comments = self.db.get_task_comments(task_id)
+            if not comments:
+                return "Комментариев нет."
+
+            table = prettytable.PrettyTable()
+            table.field_names = ["ID", "Пользователь", "Комментарий", "Дата"]
+            for row in comments:
+                table.add_row(row)
+            return str(table)
+        except Exception as e:
+            logger.error(f"[get_task_comments] Ошибка: {e}")
+            return "Ошибка при получении комментариев."
+
+    def create_project(self, name: str, description: str, created_by: int):
+        try:
+            self.db.create_project(name, description, created_by)
+            return "Проект успешно создан."
+        except Exception as e:
+            logger.error(f"[create_project] Ошибка: {e}")
+            return "Ошибка при создании проекта."
+
+    def verify_request(self, data: dict, listened_socket: socket.socket):
         sending_data = {}
         if data["message_text"] in self.registered_commands:
             sending_data = self.registered_commands[data["message_text"]]
+        elif data["message_text"] == "/help":
+            sending_data = self.get_help_message(self.get_role(listened_socket))
         elif "/db_del" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_del(data)
         elif "/db_update" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_update(data)
+        elif (
+            "/my_projects" in data["message_text"]
+            and listened_socket in self.admin_and_authorized_users.keys()
+        ):
+            sending_data = self.my_projects(
+                self.admin_and_authorized_users[listened_socket]
+            )
+        elif (
+            "/my_tasks" in data["message_text"]
+            and listened_socket in self.admin_and_authorized_users.keys()
+        ):
+            sending_data = self.my_tasks(
+                self.admin_and_authorized_users[listened_socket]
+            )
         elif "/db" in data["message_text"]:
             sending_data = {
                 "root": "server",
@@ -206,100 +397,82 @@ class Server(Socket):
         else:
             sending_data = {
                 "root": "server",
-                "message_text": "Похоже такой команды нет, пожалуйста введите /help для получение списка",
+                "message_text": "Похоже такой команды нет или вы не авторизованны, пожалуйста введите /help для получение списка доступных команд",
             }
-
         return sending_data
 
-    async def listen_socket(self, listened_socket=None):
+    async def listen_socket(self, listened_socket: socket.socket):
         while True:
             try:
                 data = await super(Server, self).listen_socket(listened_socket)
                 data = data["data"]
                 if data["chat_is_working"] and data["message_text"] != "/chat":
-                    await self.send_data(data=data)
+                    await self.send_data_to_everyone(data=data)
+                elif "/start" in data["message_text"]:
+
+                    await self.send_data(
+                        where=listened_socket,
+                        data={
+                            "root": "server",
+                            "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных команд напиши /help",
+                            "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
+                        },
+                    )
                 elif "/exit" in data["message_text"]:
-                    await super(Server, self).send_data(
+                    await self.send_data(
                         where=listened_socket,
                         data={
                             "root": "server",
                             "command": "disconnect",
                         },
                     )
+
+                    self.authorized_users.pop(listened_socket, None)
+                    self.admins.pop(listened_socket, None)
                     self.users.remove(listened_socket)
+                    logger.info(
+                        f"User {listened_socket.getsockname()[0]} disconnected!"
+                    )
                     listened_socket.close()
                     return
                 elif "/shut_down" in data["message_text"]:
-                    if self.is_admin(listened_socket):
-                        self.confirm_shut_down = True
-                        await super(Server, self).send_data(
-                            where=listened_socket,
-                            data={
-                                "root": "server",
-                                "message_text": "Для подтверждения введите: /disconnection_server [спец пароль]",
-                            },
-                        )
-                    else:
-                        await super(Server, self).send_data(
-                            where=listened_socket,
-                            data={
-                                "root": "server",
-                                "message_text": "У вас недостаточно прав!",
-                            },
-                        )
-                elif "/disconnection_server" in data["message_text"]:
                     if not self.is_admin(listened_socket):
-                        await super(Server, self).send_data(
+                        await self.send_data(
                             where=listened_socket,
                             data={
                                 "root": "server",
                                 "message_text": "У вас недостаточно прав!",
-                            },
-                        )
-                    elif not self.confirm_shut_down:
-                        await super(Server, self).send_data(
-                            where=listened_socket,
-                            data={
-                                "root": "server",
-                                "message_text": "Не было подтверждения от предыдущей команды!",
                             },
                         )
                     else:
                         try:
                             if data["message_text"].split()[1] == "4321":
-                                # TODO: переписать блокирующие функции так, чтобы можно было выключить сервер и клиенты это обработали
-                                await super(Server, self).send_data(
+                                logger.info("Shut down server...")
+                                await self.send_data(
                                     where=listened_socket,
-                                    data={
-                                        "root": "server",
-                                        "message_text": "Здесь должно было быть выключение, но у меня плохо с пониманием event_loop по-этому пока его здесь нет",
-                                    },
                                 )
+                                self.is_working = False
+                                return
                             else:
-                                self.confirm_shut_down = False
-                                await super(Server, self).send_data(
+                                await self.send_data(
                                     where=listened_socket,
                                     data={
                                         "root": "server",
-                                        "message_text": "Пароль не верен! Подтверждение сброшено!",
+                                        "message_text": "Пароль не верен!",
                                     },
                                 )
                         except Exception as exc:
                             logger.info(exc)
-                            await super(Server, self).send_data(
+                            await self.send_data(
                                 where=listened_socket,
                                 data={
                                     "root": "server",
-                                    "message_text": "Для подтверждения введите: /disconnection_server [спец пароль]",
+                                    "message_text": "Для подтверждения введите: /shut_down [спец пароль]",
                                 },
                             )
                 else:
-                    sending_data = self.verify_request(
-                        data, listened_socket=listened_socket
-                    )
-                    await super(Server, self).send_data(
-                        where=listened_socket, data=sending_data
-                    )
+                    sending_data = self.verify_request(data, listened_socket)
+                    await self.send_data(where=listened_socket, data=sending_data)
             except SocketException as exc:
                 logger.info(
                     f"User {listened_socket.getsockname()[0]} has disconnected."
@@ -310,23 +483,22 @@ class Server(Socket):
 
     async def accept_socket(self):
         while True:
-            client_socket, client_address = await self.main_loop.sock_accept(
-                self.socket
-            )
+            if not self.is_working:
+                return
+            try:
+                client_socket, client_address = await asyncio.wait_for(
+                    self.main_loop.sock_accept(self.socket), timeout=1
+                )
+            except asyncio.TimeoutError:
+                continue
             logger.info(f"User {client_address[0]} connected!")
             self.users.append(client_socket)
             self.main_loop.create_task(self.listen_socket(client_socket))
-            await super(Server, self).send_data(
-                where=client_socket,
-                data={
-                    "root": "server",
-                    "message_text": "Привет, пишет сервер, если хочешь увидеть список доступных команд напиши /help",
-                    "message_time": f"{datetime.now().hour}:{datetime.now().minute}:{datetime.now().second}",
-                },
-            )
 
     async def main(self):
-        await self.main_loop.create_task(self.accept_socket())
+        await self.accept_socket()
+        # TODO закрыть все бэкграунд таски
+        logger.info("Server is done...")
 
 
 if __name__ == "__main__":

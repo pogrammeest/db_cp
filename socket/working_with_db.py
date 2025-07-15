@@ -84,3 +84,71 @@ class WorkingWithDataBase:
         except Exception as e:
             logger.info("Exception:", e)
             self.conn.rollback()
+
+    def get_my_projects(self, user_id: int):
+        query = """
+        SELECT DISTINCT p.id, p.name, p.description, p.created_at
+        FROM projects p
+        LEFT JOIN tasks t ON t.project_id = p.id
+        LEFT JOIN task_assignees ta ON ta.task_id = t.id
+        WHERE p.created_by = %s OR ta.user_id = %s
+        ORDER BY p.created_at DESC
+        """
+        self.cursor.execute(query, (user_id, user_id))
+        return self.cursor.fetchall()
+
+    def get_my_tasks(self, user_id: int):
+        query = """
+        SELECT 
+            t.id, t.title, t.description, t.status, 
+            t.created_at, t.due_date,
+            p.name AS project_name,
+            u.username AS created_by
+        FROM tasks t
+        JOIN task_assignees ta ON ta.task_id = t.id
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN users u ON t.created_by = u.id
+        WHERE ta.user_id = %s
+        ORDER BY t.created_at DESC
+        """
+        self.cursor.execute(query, (user_id,))
+        return self.cursor.fetchall()
+
+    def assign_task(self, task_id: int, user_id: int):
+        query = """
+        INSERT INTO task_assignees (task_id, user_id)
+        VALUES (%s, %s)
+        ON CONFLICT DO NOTHING
+        """
+        self.cursor.execute(query, (task_id, user_id))
+        self.conn.commit()
+
+    def add_task_comment(self, task_id: int, user_id: int, message: str):
+        query = """
+        INSERT INTO task_comments (task_id, user_id, message)
+        VALUES (%s, %s, %s)
+        """
+        self.cursor.execute(query, (task_id, user_id, message))
+        self.conn.commit()
+
+    def get_task_comments(self, task_id: int):
+        query = """
+        SELECT c.message, c.created_at, u.username
+        FROM task_comments c
+        LEFT JOIN users u ON u.id = c.user_id
+        WHERE c.task_id = %s
+        ORDER BY c.created_at ASC
+        """
+        self.cursor.execute(query, (task_id,))
+        return self.cursor.fetchall()
+
+    def create_project(self, name: str, description: str, created_by: int):
+        query = """
+        INSERT INTO projects (name, description, created_by)
+        VALUES (%s, %s, %s)
+        RETURNING id
+        """
+        self.cursor.execute(query, (name, description, created_by))
+        project_id = self.cursor.fetchone()[0]
+        self.conn.commit()
+        return project_id

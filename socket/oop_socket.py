@@ -41,8 +41,8 @@ class Socket:
             packet = await self.main_loop.sock_recv(
                 listened_socket, massage_len - len(massage)
             )
-            if packet is None:
-                return None
+            if packet == b"":
+                raise ConnectionError
 
             massage.extend(packet)
         return massage
@@ -65,6 +65,7 @@ class Socket:
             json.JSONDecodeError,
             IndexError,
             ConnectionError,
+            TimeoutError,
         ) as exc:
             raise SocketException(exc)
 
