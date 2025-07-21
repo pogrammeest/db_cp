@@ -19,6 +19,7 @@ class Server(Socket):
         self.users = []
         self.authorized_users = {}
         self.admins = {}
+        self.tasks = []
         self.registered_commands = {
             "/chat": {"root": "server", "request": "chat"},
             "/clear": {"root": "server", "request": "clear"},
@@ -493,13 +494,22 @@ class Server(Socket):
                 continue
             logger.info(f"User {client_address[0]} connected!")
             self.users.append(client_socket)
-            self.main_loop.create_task(self.listen_socket(client_socket))
+            task = self.main_loop.create_task(self.listen_socket(client_socket))
+            self.tasks.append(task)
+
+    async def shutdown(self):
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        try:
+            self.socket.close()
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии сокета: {e}")
+        logger.info("Server is done...")
 
     async def main(self):
         await self.accept_socket()
-        # TODO закрыть все бэкграунд таски
-        logger.info("Server is done...")
-
+        await self.shutdown()
 
 if __name__ == "__main__":
     server = Server()
