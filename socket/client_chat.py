@@ -1,12 +1,14 @@
-import uuid
 from utils import logger
 from oop_socket import Socket
 import asyncio
-from datetime import datetime
+from datetime import datetime, date
 from os import system
 from exception import SocketException
 from sys import platform
 import time
+
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 
 class Client(Socket):
@@ -63,6 +65,43 @@ class Client(Socket):
         input()
         return sending_data
 
+    def create_xlsx(self, title, field_names, rows):
+        # Создание книги и листа
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title
+
+        # Запись заголовков
+        ws.append(field_names)
+
+        # Запись строк
+        for row in rows:
+            formatted_row = []
+            for value in row:
+                if isinstance(value, (datetime, date)):
+                    formatted_row.append(
+                        value.strftime("%Y-%m-%d %H:%M:%S")
+                        if isinstance(value, datetime)
+                        else value.strftime("%Y-%m-%d")
+                    )
+                else:
+                    formatted_row.append(value)
+            ws.append(formatted_row)
+
+        for col_idx, column in enumerate(field_names, 1):
+            max_length = max(
+                len(str(ws.cell(row=row_idx, column=col_idx).value))
+                for row_idx in range(1, len(rows) + 2)
+            )
+            ws.column_dimensions[get_column_letter(col_idx)].width = max_length + 2
+
+        now = datetime.now()
+        formatted = now.strftime("%Y-%m-%d_%H:%M:%S")
+        name = f"./reports/{title}_{formatted}.xlsx"
+        self.messages += f'Report with path: "{name}" was generated!\n'
+
+        wb.save(name)
+
     async def listen_socket(self, listened_socket):
         while True:
             try:
@@ -111,6 +150,11 @@ class Client(Socket):
                     self.messages += f"$$SERVER MESSAGE$$:{data['message_text']}\n"
                 elif data.get("root") == "user" and self.chat_is_working:
                     self.messages += f"{data['message_time']}:{data['message_text']}\n"
+                if data.get("root") == "server" and data.get("request") == "xlsx":
+                    field_names = data.get("field_names")
+                    rows = data.get("rows")
+                    title = data.get("title")
+                    self.create_xlsx(title, field_names, rows)
 
                 if platform == "win32":
                     system("cls")

@@ -67,6 +67,8 @@ class Server(Socket):
         authorized_commands = [
             "/my_projects - мои проекты",
             "/my_tasks - мои задачи",
+            "/my_projects_report - сгенерировать отчет по проектам",
+            "/my_tasks_report - сгенерировать отчет по задачам",
         ]
         admin_commands = [
             "/db_del - удаление таблиц",
@@ -193,6 +195,21 @@ class Server(Socket):
                 "message_text": f"Ошибка при авторизации: {exc}",
             }
 
+    def my_projects_xlsx(self, user_id: int):
+        field_names = ["ID", "Название", "Описание", "Создано"]
+        projects = None
+        try:
+            projects = self.db.get_my_projects(user_id)
+        except Exception as e:
+            logger.error(f"[my_projects_xlsx] Ошибка: {e}")
+        return {
+            "root": "server",
+            "request": "xlsx",
+            "title": "tasks",
+            "field_names": field_names,
+            "rows": projects,
+        }
+
     def my_projects(self, user_id: int):
         try:
             projects = self.db.get_my_projects(user_id)
@@ -211,6 +228,30 @@ class Server(Socket):
             "root": "server",
             "message_text": msg,
             "request": "show_db",
+        }
+
+    def my_tasks_xlsx(self, user_id: int):
+        field_names = [
+            "ID",
+            "Название",
+            "Описание",
+            "Статус",
+            "Создано",
+            "Срок",
+            "Проект",
+            "Автор",
+        ]
+        tasks = None
+        try:
+            tasks = self.db.get_my_tasks(user_id)
+        except Exception as e:
+            logger.error(f"[my_tasks_xl] Ошибка: {e}")
+        return {
+            "root": "server",
+            "request": "xlsx",
+            "title": "tasks",
+            "field_names": field_names,
+            "rows": tasks,
         }
 
     def my_tasks(self, user_id: int):
@@ -371,6 +412,20 @@ class Server(Socket):
         elif "/db_update" in data["message_text"] and self.is_admin(listened_socket):
             sending_data = self.db_update(data)
         elif (
+            "/my_tasks_report" in data["message_text"]
+            and listened_socket in self.admin_and_authorized_users.keys()
+        ):
+            sending_data = self.my_tasks_xlsx(
+                self.admin_and_authorized_users[listened_socket]
+            )
+        elif (
+            "/my_projects_report" in data["message_text"]
+            and listened_socket in self.admin_and_authorized_users.keys()
+        ):
+            sending_data = self.my_projects_xlsx(
+                self.admin_and_authorized_users[listened_socket]
+            )
+        elif (
             "/my_projects" in data["message_text"]
             and listened_socket in self.admin_and_authorized_users.keys()
         ):
@@ -510,6 +565,7 @@ class Server(Socket):
     async def main(self):
         await self.accept_socket()
         await self.shutdown()
+
 
 if __name__ == "__main__":
     server = Server()
