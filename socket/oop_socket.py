@@ -1,7 +1,12 @@
 import socket
 import asyncio
 import struct
-import json
+import orjson
+import uuid
+from enum import Enum
+from datetime import date, time, datetime
+from decimal import Decimal
+
 
 from exception import SocketException
 from settings import SERVER_ADDRESS, ENCODING
@@ -47,11 +52,29 @@ class Socket:
             massage.extend(packet)
         return massage
 
+    def json_default(self, o):
+        if isinstance(o, uuid.UUID):
+            return str(o)
+        elif isinstance(o, Enum):
+            return o.value
+        elif isinstance(o, Decimal):
+            return float(str(o))
+        elif isinstance(o, Exception):
+            return str(o)
+        elif isinstance(o, set):
+            return list(o)
+        elif isinstance(o, time):
+            return o.strftime("%H:%M")
+        elif isinstance(o, (datetime, date)):
+            return str(o.strftime("%s"))
+
+        raise TypeError
+
     def _encode_data(self, data):
-        return json.dumps(data).encode(self.encoding)
+        return orjson.dumps(data, default=self.json_default)
 
     def _decode_data(self, data: bytes):
-        return json.loads(data.decode(self.encoding))
+        return orjson.loads(data.decode(self.encoding))
 
     async def listen_socket(self, listened_socket):
         try:
@@ -62,7 +85,7 @@ class Socket:
         except (
             SocketException,
             UnicodeDecodeError,
-            json.JSONDecodeError,
+            orjson.JSONDecodeError,
             IndexError,
             ConnectionError,
             TimeoutError,
