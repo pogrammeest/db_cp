@@ -17,7 +17,9 @@ CREATE TABLE users (
 
 CREATE TABLE user_profiles (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    full_name VARCHAR(100),
+    surname VARCHAR(50),
+    name VARCHAR(50),
+    patronymic VARCHAR(50),
     bio TEXT,
     avatar_url TEXT
 );
